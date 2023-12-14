@@ -61,7 +61,12 @@ func (f *FakeRedis) Get(key string) *redis.StringCmd {
 	f.Lock()
 	defer f.Unlock()
 	cmd := redis.NewStringCmd(f.ctx)
-	cmd.SetVal(f.getCheckExpiration(key))
+	v, ok := f.getCheckExpiration(key)
+	if !ok {
+		cmd.SetErr(fmt.Errorf("not found"))
+	} else {
+		cmd.SetVal(v)
+	}
 	return cmd
 }
 
@@ -82,14 +87,20 @@ func (f *FakeRedis) Set(key string, value any, expiration time.Duration) *redis.
 func (f *FakeRedis) Incr(key string) *redis.IntCmd {
 	f.Lock()
 	defer f.Unlock()
+
 	cmd := redis.NewIntCmd(f.ctx)
-	v, err := strconv.ParseInt(f.getCheckExpiration(key), 10, 64)
-	if err != nil {
-		cmd.SetErr(fmt.Errorf("value is not an integer or out of range: %w", err))
+	v, ok := f.getCheckExpiration(key)
+	if !ok {
+		cmd.SetErr(fmt.Errorf("not found"))
 	} else {
-		v++
-		f.values[key] = strconv.FormatInt(v, 10)
-		cmd.SetVal(v)
+		d, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			cmd.SetErr(fmt.Errorf("value is not an integer or out of range: %w", err))
+		} else {
+			d++
+			f.values[key] = strconv.FormatInt(d, 10)
+			cmd.SetVal(d)
+		}
 	}
 	return cmd
 }
@@ -239,15 +250,18 @@ func (f *FakeRedis) RPop(key string) *redis.StringCmd {
 }
 
 // internal methods
-func (f *FakeRedis) getCheckExpiration(key string) string {
-	v := f.values[key]
+func (f *FakeRedis) getCheckExpiration(key string) (string, bool) {
+	v, exists := f.values[key]
+	if !exists {
+		return "", false
+	}
 	exp, ok := f.expirations[key]
 	if ok && exp.Before(time.Now()) {
-		v = ""
 		delete(f.values, key)
 		delete(f.expirations, key)
+		return "", false
 	}
-	return v
+	return v, true
 }
 
 func (f *FakeRedis) sliceGetCheckExpiration(key string) []string {
