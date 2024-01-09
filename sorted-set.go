@@ -1,14 +1,20 @@
 package fakeredis
 
 import (
-	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/exp/slices"
 )
 
-func zScoreCompare(a, b redis.Z) int { return int(a.Score) - int(b.Score) }
+func zScoreCompare(a, b redis.Z) int {
+	if a.Score > b.Score {
+		return 1
+	} else if a.Score < b.Score {
+		return -1
+	}
+	return 0
+}
 
 func (f *FakeRedis) ZAdd(key string, values ...redis.Z) *redis.IntCmd {
 	f.Lock()
@@ -20,6 +26,51 @@ func (f *FakeRedis) ZAddNX(key string, values ...redis.Z) *redis.IntCmd {
 	f.Lock()
 	defer f.Unlock()
 	return f.zadd(key, true, values...)
+}
+
+func (f *FakeRedis) zadd(key string, nx bool, values ...redis.Z) *redis.IntCmd {
+	cmd := redis.NewIntCmd(f.ctx)
+	zset, ok := f.sortedSetGetCheckExpiration(key)
+	if !ok {
+		zset = make([]redis.Z, 0, len(values))
+	}
+
+	var n int64
+	for _, v := range values {
+		idx := slices.IndexFunc(zset, func(z redis.Z) bool { return z.Member == v.Member })
+		if idx != -1 {
+			// member exists -- if not nx
+			if nx {
+				continue
+			}
+			// just change the score
+			curr := zset[idx].Score
+			switch {
+			case v.Score == curr:
+				// same score, do nothing
+			case v.Score < curr:
+				// new score is lower, so we must move it towards the beginning
+				next, _ := slices.BinarySearchFunc(zset[:idx], v, zScoreCompare)
+				copy(zset[next+1:idx+1], zset[next:idx])
+				zset[next] = v
+			case v.Score > curr:
+				// new score is greater, so we must move it towards the end
+				next, _ := slices.BinarySearchFunc(zset[idx:], v, zScoreCompare)
+				copy(zset[idx:idx+next], zset[idx+1:idx+next])
+				zset[idx+next-1] = v
+			}
+		} else {
+			// member doesn't exist, add it to the correct sorted position
+			n++
+			idx, _ := slices.BinarySearchFunc(zset, v, zScoreCompare)
+			zset = append(zset, redis.Z{}) // bogus
+			copy(zset[idx+1:], zset[idx:])
+			zset[idx] = v
+		}
+	}
+	f.valueSortedSets[key] = zset
+	cmd.SetVal(n)
+	return cmd
 }
 
 func (f *FakeRedis) ZCard(key string) *redis.IntCmd {
@@ -51,6 +102,7 @@ func (f *FakeRedis) ZRem(key string, members ...string) *redis.IntCmd {
 		}
 	}
 
+	f.valueSortedSets[key] = zset
 	cmd.SetVal(n)
 	return cmd
 }
@@ -75,19 +127,19 @@ func (f *FakeRedis) ZRangeByScore(key string, opt *redis.ZRangeBy) *redis.String
 		zset = zset[_opt.Offset:]
 	}
 
-	minV, _ := strconv.Atoi(_opt.Min)
+	minV := parseInt(_opt.Min)
 	minIdx := 0
 	if minV != 0 {
-		minIdx, _ = slices.BinarySearchFunc(zset, minV, func(z redis.Z, i int) int { return int(z.Score) - i })
+		minIdx, _ = slices.BinarySearchFunc(zset, redis.Z{Score: float64(minV)}, zScoreCompare)
 	}
-	maxV, _ := strconv.Atoi(_opt.Max)
-	maxIdx := 0
+	maxV := parseInt(_opt.Max)
+	maxIdx := len(zset)
 	if maxV != 0 {
-		maxIdx, _ = slices.BinarySearchFunc(zset, maxV, func(z redis.Z, i int) int { return int(z.Score) - i })
+		maxIdx, _ = slices.BinarySearchFunc(zset, redis.Z{Score: float64(maxV)}, zScoreCompare)
 	}
 	if _opt.Count != 0 {
+		maxIdx = min(maxMembers, minIdx+int(_opt.Count))
 		maxMembers = int(_opt.Count)
-		maxIdx = minIdx + int(_opt.Count)
 	}
 
 	values := make([]string, 0, maxMembers)
@@ -126,56 +178,4 @@ func (f *FakeRedis) sortedSetGetCheckExpiration(key string) ([]redis.Z, bool) {
 		return nil, false
 	}
 	return v, true
-}
-
-func (f *FakeRedis) zadd(key string, nx bool, values ...redis.Z) *redis.IntCmd {
-	cmd := redis.NewIntCmd(f.ctx)
-	zset, ok := f.sortedSetGetCheckExpiration(key)
-	if !ok {
-		n := len(values)
-		zset = make([]redis.Z, n)
-		cmd.SetVal(int64(n))
-		f.valueSortedSets[key] = zset
-		for i, v := range values {
-			zset[i] = v
-		}
-		slices.SortFunc(zset, func(a, b redis.Z) int { return int(a.Score) - int(b.Score) })
-		return cmd
-	}
-
-	var n int64
-	for _, v := range values {
-		idx := slices.IndexFunc(zset, func(z redis.Z) bool { return z.Member == v.Member })
-		if idx != -1 {
-			// member exists -- if not nx
-			if nx {
-				continue
-			}
-			// just change the score
-			curr := zset[idx].Score
-			switch {
-			case v.Score == curr:
-				// same score, do nothing
-			case v.Score < curr:
-				// new score is lower, so we must move it towards the end
-				next, _ := slices.BinarySearchFunc(zset[idx:], v, zScoreCompare)
-				copy(zset[idx+1:idx+1+next], zset[idx:next])
-				zset[idx+next] = v
-			case v.Score > curr:
-				// new score is greater, so we must move it towards the beginning
-				next, _ := slices.BinarySearchFunc(zset[:idx], v, zScoreCompare)
-				copy(zset[next+1:idx+1], zset[next:idx])
-				zset[next] = v
-			}
-		} else {
-			// member doesn't exist, add it to the correct sorted position
-			n++
-			idx, _ := slices.BinarySearchFunc(zset, v, zScoreCompare)
-			zset = append(zset, redis.Z{}) // bogus
-			copy(zset[idx+1:], zset[idx:])
-			zset[idx] = v
-		}
-	}
-	cmd.SetVal(n)
-	return cmd
 }

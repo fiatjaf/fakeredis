@@ -23,11 +23,12 @@ func New() *FakeRedis {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	f := FakeRedis{
-		values:      make(map[string]string),
-		valueSlices: make(map[string][]string),
-		expirations: make(map[string]time.Time),
-		ctx:         ctx,
-		cancel:      cancel,
+		values:          make(map[string]string),
+		valueSlices:     make(map[string][]string),
+		valueSortedSets: make(map[string][]redis.Z),
+		expirations:     make(map[string]time.Time),
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 
 	// delete expired keys
