@@ -77,3 +77,17 @@ func (f *FakeRedis) SetNX(key string, value any, expiration time.Duration) *redi
 	cmd.SetVal(true)
 	return cmd
 }
+
+func (f *FakeRedis) getCheckExpiration(key string) (string, bool) {
+	v, exists := f.values[key]
+	if !exists {
+		return "", false
+	}
+	exp, ok := f.expirations[key]
+	if ok && exp.Before(time.Now()) {
+		delete(f.values, key)
+		delete(f.expirations, key)
+		return "", false
+	}
+	return v, true
+}

@@ -2,6 +2,7 @@ package fakeredis
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -33,4 +34,18 @@ func (f *FakeRedis) RPop(key string) *redis.StringCmd {
 	f.valueSlices[key] = f.valueSlices[key][:l-1]
 	cmd.SetVal(v)
 	return cmd
+}
+
+func (f *FakeRedis) sliceGetCheckExpiration(key string) []string {
+	v, ok := f.valueSlices[key]
+	if !ok {
+		return v
+	}
+	exp, ok := f.expirations[key]
+	if ok && exp.Before(time.Now()) {
+		v = nil
+		delete(f.valueSlices, key)
+		delete(f.expirations, key)
+	}
+	return v
 }

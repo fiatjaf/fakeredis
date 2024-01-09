@@ -4,16 +4,19 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 type FakeRedis struct {
 	sync.Mutex
-	values        map[string]string
-	valueSlices   map[string][]string
-	valueHashmaps map[string]map[string]string
-	expirations   map[string]time.Time
-	ctx           context.Context
-	cancel        context.CancelFunc
+	values          map[string]string
+	valueSlices     map[string][]string
+	valueHashmaps   map[string]map[string]string
+	valueSortedSets map[string][]redis.Z
+	expirations     map[string]time.Time
+	ctx             context.Context
+	cancel          context.CancelFunc
 }
 
 func New() *FakeRedis {

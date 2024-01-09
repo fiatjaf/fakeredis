@@ -2,6 +2,7 @@ package fakeredis
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/exp/maps"
@@ -78,4 +79,15 @@ func (f *FakeRedis) HGetAll(key string) *redis.MapStringStringCmd {
 	cmd := redis.NewMapStringStringCmd(f.ctx)
 	cmd.SetVal(maps.Clone(f.hashmapGetCheckExpiration(key)))
 	return cmd
+}
+
+func (f *FakeRedis) hashmapGetCheckExpiration(key string) map[string]string {
+	var hashmap map[string]string
+	if exp, ok := f.expirations[key]; !ok || !exp.Before(time.Now()) {
+		hashmap, _ = f.valueHashmaps[key]
+	}
+	if hashmap == nil {
+		hashmap = make(map[string]string)
+	}
+	return hashmap
 }
